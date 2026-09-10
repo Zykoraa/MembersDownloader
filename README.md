@@ -1,10 +1,13 @@
 # MembersDownloader
 
-An ultimate power-user GUI for `yt-dlp`. 
+An ultimate power-user GUI for `yt-dlp` designed for seamless members-only, video, and playlist downloads.
 
 ## Features
 - **Batch Downloading:** Download massive playlists overnight with multi-threading.
-- **Audio Normalization:** Automatically equalize loud/quiet audio tracks.
+- **Auto-Merge & Cover Art Embedding:** Automatically merges split video & audio streams into pristine `.mp4` files with embedded thumbnail artwork (displayed natively in Windows Explorer).
+- **Zero-Clutter Engine:** Automatically deletes leftover raw `.webm`, `.part`, and loose `.jpg` files after merge.
+- **Audio Normalization:** Automatically equalize loud/quiet audio tracks using loudnorm.
+- **Custom Download Paths:** Set and save your preferred download directory or external drive directly from the top bar.
 - **Proxy/VPN Bypass:** Route through custom proxies to bypass geo-blocks.
 - **Auto-Retry Engine:** Bulletproof downloading that retries on failure.
 - **Clipboard Monitor:** Silently run in the system tray and auto-add copied YouTube links.

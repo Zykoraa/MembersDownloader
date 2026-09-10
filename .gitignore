@@ -4,3 +4,17 @@ dist/
 *.spec
 *.log
 downloader_history.json
+
+# Media & temporary download fragments
+*.mp4
+*.webm
+*.mkv
+*.part
+*.ytdl
+*.jpg
+*.webp
+
+# User config & cookies
+*cookies*.txt
+MembersDownloader_Settings.json
+MembersDownloader_Archive.txt

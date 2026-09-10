@@ -2,12 +2,13 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox, filedialog
 import os
+import shutil
 import threading
 import subprocess
 import re
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import pystray
@@ -22,18 +23,28 @@ SETTINGS_FILE = os.path.join(DOCS_DIR, 'MembersDownloader_Settings.json')
 ARCHIVE_FILE = os.path.join(DOCS_DIR, 'MembersDownloader_Archive.txt')
 
 def load_settings():
+    default_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+    default_cookie = os.path.join(os.path.expanduser('~'), 'Downloads', 'cookies.txt')
+    default_settings = {
+        "theme": "blue",
+        "mode": "Dark",
+        "download_dir": default_dir,
+        "browser": "custom",
+        "cookie_file": default_cookie
+    }
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                default_settings.update(data)
         except:
             pass
-    return {"theme": "blue", "mode": "Dark"}
+    return default_settings
 
 def save_settings(settings):
     try:
         with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f)
+            json.dump(settings, f, indent=4)
     except:
         pass
 
@@ -150,6 +161,15 @@ class DownloaderApp:
         subtitle = ctk.CTkLabel(title_frame, text="Closing the window minimizes to System Tray. Use Quit from tray to exit.", font=ctk.CTkFont(size=12), text_color="gray")
         subtitle.pack()
 
+        # --- Save Location Bar (Always Visible) ---
+        self.dir_var = ctk.StringVar(value=current_settings.get("download_dir", os.path.join(os.path.expanduser('~'), 'Downloads')))
+        dir_bar = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        dir_bar.pack(fill=tk.X, padx=20, pady=(0, 10))
+        ctk.CTkLabel(dir_bar, text="📁 Save Folder:", font=ctk.CTkFont(weight="bold", size=13)).pack(side=tk.LEFT, padx=(0, 10))
+        self.dir_entry_top = ctk.CTkEntry(dir_bar, textvariable=self.dir_var, height=36, font=ctk.CTkFont(size=12))
+        self.dir_entry_top.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        ctk.CTkButton(dir_bar, text="Browse Folder", width=110, height=36, font=ctk.CTkFont(weight="bold"), command=self.browse_dir).pack(side=tk.RIGHT)
+
         # --- Top Section: URL & Queue ---
         top_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         top_frame.pack(fill=tk.X, padx=20, pady=(0, 10))
@@ -208,14 +228,17 @@ class DownloaderApp:
         action_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         action_frame.pack(fill=tk.X, padx=20, pady=(10, 15))
         
-        self.btn_start = ctk.CTkButton(action_frame, text="▶ Start Downloads", font=ctk.CTkFont(size=16, weight="bold"), height=50, command=self.start_queue)
-        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.btn_start = ctk.CTkButton(action_frame, text="▶ Start Downloads", font=ctk.CTkFont(size=15, weight="bold"), height=50, command=self.start_queue)
+        self.btn_start.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
-        self.btn_cancel = ctk.CTkButton(action_frame, text="⏹ Stop All", font=ctk.CTkFont(size=16, weight="bold"), height=50, fg_color="#C62828", hover_color="#B71C1C", state="disabled", command=self.cancel_downloads)
+        self.btn_cancel = ctk.CTkButton(action_frame, text="⏹ Stop All", font=ctk.CTkFont(size=15, weight="bold"), height=50, fg_color="#C62828", hover_color="#B71C1C", state="disabled", command=self.cancel_downloads)
         self.btn_cancel.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        self.btn_clear = ctk.CTkButton(action_frame, text="🗑 Clear Completed", font=ctk.CTkFont(size=16, weight="bold"), height=50, fg_color="#555555", hover_color="#333333", command=self.clear_completed)
-        self.btn_clear.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
+        self.btn_clear = ctk.CTkButton(action_frame, text="🗑 Clear Done", font=ctk.CTkFont(size=15, weight="bold"), height=50, fg_color="#555555", hover_color="#333333", command=self.clear_completed)
+        self.btn_clear.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        self.btn_clean = ctk.CTkButton(action_frame, text="🧹 Merge & Clean Leftovers", font=ctk.CTkFont(size=15, weight="bold"), height=50, fg_color="#1E88E5", hover_color="#1565C0", command=self.manual_merge_clean)
+        self.btn_clean.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
     # --- System Tray ---
     def hide_window(self):
@@ -238,11 +261,10 @@ class DownloaderApp:
         
         # Directory
         ctk.CTkLabel(tab, text="Save Folder:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=(15, 0), sticky="w")
-        self.dir_var = ctk.StringVar(value=os.path.join(os.path.expanduser('~'), 'Downloads'))
-        self.dir_entry = ctk.CTkEntry(tab, textvariable=self.dir_var, state='disabled')
+        self.dir_entry = ctk.CTkEntry(tab, textvariable=self.dir_var)
         self.dir_entry.grid(row=0, column=1, padx=10, pady=(15, 0), sticky="ew")
         ctk.CTkButton(tab, text="Browse", width=80, command=self.browse_dir).grid(row=0, column=2, padx=10, pady=(15, 0))
-        ctk.CTkLabel(tab, text="Where do you want the videos to be saved?", text_color="gray", font=ctk.CTkFont(size=11)).grid(row=1, column=1, padx=10, pady=(0, 10), sticky="w")
+        ctk.CTkLabel(tab, text="Where do you want the videos to be saved? (Also shown on the main screen above)", text_color="gray", font=ctk.CTkFont(size=11)).grid(row=1, column=1, padx=10, pady=(0, 10), sticky="w")
         
         # Folder Org
         ctk.CTkLabel(tab, text="Folder Organization:", font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, padx=10, pady=0, sticky="w")
@@ -300,17 +322,31 @@ class DownloaderApp:
         ctk.CTkLabel(tab, text="Login Method:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 5))
         ctk.CTkLabel(tab, text="To download Members-Only videos, the app needs to borrow your browser cookies so YouTube knows you are a paid member.", text_color="gray", font=ctk.CTkFont(size=11), wraplength=900, justify="left").pack(anchor="w", padx=10, pady=(0, 5))
         
-        self.browser_var = ctk.StringVar(value="brave")
+        def on_browser_change():
+            val = self.browser_var.get()
+            current_settings["browser"] = val
+            save_settings(current_settings)
+            if val == "custom":
+                self.cookie_entry.configure(state='normal')
+            else:
+                self.cookie_entry.configure(state='disabled')
+
+        saved_browser = current_settings.get("browser", "custom")
+        saved_cookie = current_settings.get("cookie_file", os.path.join(os.path.expanduser('~'), 'Downloads', 'cookies.txt'))
+
+        self.browser_var = ctk.StringVar(value=saved_browser)
         radio_frame = ctk.CTkFrame(tab, fg_color="transparent")
         radio_frame.pack(fill=tk.X, padx=10, pady=5)
         browsers = [("Brave", "brave"), ("Chrome", "chrome"), ("Edge", "edge"), ("Firefox", "firefox"), ("None", "none"), ("Custom cookies.txt", "custom")]
         for i, (text, val) in enumerate(browsers):
-            ctk.CTkRadioButton(radio_frame, text=text, variable=self.browser_var, value=val).grid(row=i//3, column=i%3, padx=20, pady=10, sticky="w")
+            ctk.CTkRadioButton(radio_frame, text=text, variable=self.browser_var, value=val, command=on_browser_change).grid(row=i//3, column=i%3, padx=20, pady=10, sticky="w")
             
         cookie_frame = ctk.CTkFrame(tab, fg_color="transparent")
         cookie_frame.pack(fill=tk.X, padx=10, pady=10)
-        self.cookie_var = ctk.StringVar(value="")
-        self.cookie_entry = ctk.CTkEntry(cookie_frame, textvariable=self.cookie_var, placeholder_text="Path to cookies.txt (Only needed if you selected Custom)...", state='disabled')
+        self.cookie_var = ctk.StringVar(value=saved_cookie)
+        self.cookie_entry = ctk.CTkEntry(cookie_frame, textvariable=self.cookie_var, placeholder_text="Path to cookies.txt (Only needed if you selected Custom)...")
+        if saved_browser != "custom":
+            self.cookie_entry.configure(state='disabled')
         self.cookie_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         ctk.CTkButton(cookie_frame, text="Browse", width=80, command=self.browse_cookie).pack(side=tk.RIGHT)
 
@@ -331,8 +367,8 @@ class DownloaderApp:
         
         f1 = ctk.CTkFrame(tab, fg_color="transparent")
         f1.grid(row=0, column=1, padx=20, pady=10, sticky="w")
-        ctk.CTkSwitch(f1, text="Download Thumbnail & Meta", variable=self.var_meta).pack(anchor="w")
-        ctk.CTkLabel(f1, text="Saves the YouTube thumbnail and embeds the description.", text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=45)
+        ctk.CTkSwitch(f1, text="Embed Thumbnail & Metadata", variable=self.var_meta).pack(anchor="w")
+        ctk.CTkLabel(f1, text="Embeds the thumbnail as the file cover picture (no extra files).", text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=45)
         
         # Row 1
         f2 = ctk.CTkFrame(tab, fg_color="transparent")
@@ -342,8 +378,8 @@ class DownloaderApp:
         
         f3 = ctk.CTkFrame(tab, fg_color="transparent")
         f3.grid(row=1, column=1, padx=20, pady=10, sticky="w")
-        ctk.CTkSwitch(f3, text="Force MP4 Re-encode", variable=self.var_force_mp4).pack(anchor="w")
-        ctk.CTkLabel(f3, text="Forces the video to be a standard MP4 file.", text_color="gray", font=ctk.CTkFont(size=11), wraplength=400, justify="left").pack(anchor="w", padx=45)
+        ctk.CTkSwitch(f3, text="Force MP4 Format", variable=self.var_force_mp4).pack(anchor="w")
+        ctk.CTkLabel(f3, text="Merges directly into clean MP4 (no leftover .webm files).", text_color="gray", font=ctk.CTkFont(size=11), wraplength=400, justify="left").pack(anchor="w", padx=45)
         
         # Row 2
         f4 = ctk.CTkFrame(tab, fg_color="transparent")
@@ -362,6 +398,12 @@ class DownloaderApp:
         f6.grid(row=3, column=0, padx=20, pady=10, sticky="w")
         ctk.CTkSwitch(f6, text="Monitor Clipboard", variable=self.var_clipboard, command=self.toggle_clipboard_monitor).pack(anchor="w")
         ctk.CTkLabel(f6, text="Auto-adds YouTube links you copy to the queue.", text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=45)
+        
+        self.var_members_only = ctk.BooleanVar(value=False)
+        f7 = ctk.CTkFrame(tab, fg_color="transparent")
+        f7.grid(row=3, column=1, padx=20, pady=10, sticky="w")
+        ctk.CTkSwitch(f7, text="Members-Only Filter", variable=self.var_members_only).pack(anchor="w")
+        ctk.CTkLabel(f7, text="If you paste a channel URL, it will skip public videos.", text_color="gray", font=ctk.CTkFont(size=11), wraplength=400, justify="left").pack(anchor="w", padx=45)
         
         # Playlist controls
         pl_frame = ctk.CTkFrame(tab, fg_color="transparent")
@@ -485,10 +527,8 @@ class DownloaderApp:
         d = filedialog.askdirectory(initialdir=self.dir_var.get())
         if d:
             self.dir_var.set(d)
-            self.dir_entry.configure(state="normal")
-            self.dir_entry.delete(0, tk.END)
-            self.dir_entry.insert(0, d)
-            self.dir_entry.configure(state="disabled")
+            current_settings["download_dir"] = d
+            save_settings(current_settings)
 
     def browse_cookie(self):
         f = filedialog.askopenfilename(title="Select cookies.txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
@@ -497,8 +537,10 @@ class DownloaderApp:
             self.cookie_entry.configure(state="normal")
             self.cookie_entry.delete(0, tk.END)
             self.cookie_entry.insert(0, f)
-            self.cookie_entry.configure(state="disabled")
             self.browser_var.set("custom")
+            current_settings["cookie_file"] = f
+            current_settings["browser"] = "custom"
+            save_settings(current_settings)
 
     def add_to_queue(self):
         url = self.url_entry.get().strip()
@@ -506,6 +548,13 @@ class DownloaderApp:
         end = self.trim_end.get().strip()
         if not url:
             return
+
+        # Smart convert channel URLs to direct members-only playlist
+        if "@midwestsafety" in url.lower():
+            url = "https://www.youtube.com/playlist?list=UUMOazRf1jcMNZEL1MS5i_rWQQ"
+        elif "youtube.com/channel/UC" in url:
+            url = re.sub(r'youtube\.com/channel/UC([a-zA-Z0-9_\-]+).*', r'youtube.com/playlist?list=UUMO\1', url)
+
         self._add_to_queue_internal(url, start, end)
         self.url_entry.delete(0, tk.END)
         self.trim_start.delete(0, tk.END)
@@ -608,35 +657,50 @@ class DownloaderApp:
                 time.sleep(1)
 
     def run_silent_archive_download(self, url):
-        browser = self.browser_var.get()
-        quality = self.quality_var.get()
-        org = self.folder_org_var.get()
+        config = self.get_config_sync()
         
-        tmpl = self.tmpl_var.get()
+        browser = config["browser"]
+        quality = config["quality"]
+        org = config["org"]
+        
+        tmpl = config["tmpl"]
         if not tmpl.strip():
             tmpl = "%(title)s.%(ext)s"
             
         if org == "By Channel Name":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(uploader)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(uploader)s', tmpl)
         elif org == "By Playlist":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(playlist)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(playlist)s', tmpl)
         elif org == "By Channel & Playlist":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(uploader)s', '%(playlist)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(uploader)s', '%(playlist)s', tmpl)
         else:
-            out_tmpl = os.path.join(self.dir_var.get(), tmpl)
+            out_tmpl = os.path.join(config["dir"], tmpl)
         
         cmd = ['yt-dlp', '--download-archive', ARCHIVE_FILE]
+        cmd.extend(['--sleep-requests', '1.5', '--sleep-interval', '3', '--max-sleep-interval', '6'])
         if browser == "custom":
-            cmd.extend(['--cookies', self.cookie_var.get()])
+            working_cookie = os.path.join(DOCS_DIR, 'working_cookies.txt')
+            try:
+                if os.path.exists(config["cookie"]):
+                    shutil.copyfile(config["cookie"], working_cookie)
+                    cmd.extend(['--cookies', working_cookie])
+                else:
+                    cmd.extend(['--cookies', config["cookie"]])
+            except:
+                cmd.extend(['--cookies', config["cookie"]])
         elif browser != "none":
             cmd.extend(['--cookies-from-browser', browser])
             
         cmd.extend(['--extractor-args', 'youtube:player_client=mweb,web,tv', '--js-runtimes', 'node'])
         
-        rate = self.rate_var.get().strip()
+        rate = config["rate"].strip()
         if rate:
             cmd.extend(['--limit-rate', rate])
             
+        if config.get("members_only"):
+            cmd.extend(['--match-filters', "availability == subscriber_only"])
+            
+        force_mp4 = config["force_mp4"]
         if quality == "1080p":
             cmd.extend(['-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'])
         elif quality == "720p":
@@ -644,14 +708,17 @@ class DownloaderApp:
         elif quality == "480p":
             cmd.extend(['-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]/best'])
         elif quality == "Audio Only":
-            cmd.extend(['-f', 'bestaudio/best', '--extract-audio', '--audio-format', self.audio_var.get().lower()])
+            cmd.extend(['-f', 'bestaudio/best', '--extract-audio', '--audio-format', config["audio"].lower()])
         else:
             cmd.extend(['-f', 'bestvideo+bestaudio/best'])
             
-        if self.var_force_mp4.get() and quality != "Audio Only":
-            cmd.extend(['--recode-video', 'mp4'])
+        if force_mp4 and quality != "Audio Only":
+            cmd.extend(['--merge-output-format', 'mp4', '--remux-video', 'mp4'])
         elif quality != "Audio Only":
-            cmd.extend(['--merge-output-format', 'mkv'])
+            cmd.extend(['--merge-output-format', 'mkv', '--remux-video', 'mkv'])
+            
+        if config["meta"]:
+            cmd.extend(['--embed-thumbnail', '--embed-metadata', '--convert-thumbnails', 'jpg'])
             
         cmd.extend(['-o', out_tmpl, url])
         try: subprocess.run(cmd, creationflags=0x08000000, capture_output=True)
@@ -782,20 +849,107 @@ class DownloaderApp:
             time.sleep(10)
 
     def execute_start_queue(self, pending):
+        self.is_downloading = True
         self.root.after(0, lambda: self.btn_start.configure(text="▶ Start Downloads", state="disabled"))
+        self.root.after(0, lambda: self.btn_cancel.configure(state="normal"))
         workers = int(self.workers_var.get())
         self.executor = ThreadPoolExecutor(max_workers=workers)
         for item in pending:
             self.executor.submit(self.download_worker, item)
         threading.Thread(target=self.monitor_executor, daemon=True).start()
 
+    def manual_merge_clean(self):
+        download_dir = self.dir_var.get()
+        if not os.path.exists(download_dir):
+            messagebox.showerror("Error", f"Folder does not exist:\n{download_dir}")
+            return
+        self.btn_clean.configure(state="disabled", text="⏳ Merging...")
+        threading.Thread(target=self._run_manual_clean_thread, args=(download_dir,), daemon=True).start()
+
+    def _run_manual_clean_thread(self, download_dir):
+        merged = self.auto_merge_and_cleanup(download_dir)
+        self.root.after(0, lambda: self.btn_clean.configure(state="normal", text="🧹 Merge & Clean Leftovers"))
+        self.root.after(0, lambda: messagebox.showinfo("Merge & Clean Complete", f"Processed {merged} videos in:\n{download_dir}"))
+
+    def auto_merge_and_cleanup(self, download_dir):
+        """Scans download_dir for any unmerged stream pairs (.f*.mp4 + .f*.webm)
+        and automatically merges them with embedded thumbnail cover art using FFmpeg,
+        then cleans up temporary fragments and orphan thumbnails/audio."""
+        if not os.path.exists(download_dir):
+            return 0
+        merged_count = 0
+        try:
+            # 1. Merge any unmerged video/audio stream pairs
+            v_files = [f for f in os.listdir(download_dir) if re.search(r'\.f\d+\.mp4$', f)]
+            for v_name in v_files:
+                v_path = os.path.join(download_dir, v_name)
+                title = re.sub(r'\.f\d+\.mp4$', '', v_name)
+                out_mp4 = os.path.join(download_dir, f"{title}.mp4")
+                thumb_jpg = os.path.join(download_dir, f"{title}.jpg")
+                
+                audio_candidates = [f for f in os.listdir(download_dir) if f.startswith(title) and re.search(r'\.f\d+\.webm$', f)]
+                if not audio_candidates:
+                    continue
+                a_path = os.path.join(download_dir, audio_candidates[0])
+                
+                if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 1024 * 1024:
+                    try: os.remove(v_path)
+                    except: pass
+                    try: os.remove(a_path)
+                    except: pass
+                    if os.path.exists(thumb_jpg):
+                        try: os.remove(thumb_jpg)
+                        except: pass
+                    continue
+                
+                cmd = ['ffmpeg', '-y', '-i', v_path, '-i', a_path]
+                if os.path.exists(thumb_jpg):
+                    cmd.extend(['-i', thumb_jpg, '-map', '0:v', '-map', '1:a', '-map', '2', '-c', 'copy', '-disposition:v:1', 'attached_pic'])
+                else:
+                    cmd.extend(['-map', '0:v', '-map', '1:a', '-c', 'copy'])
+                cmd.append(out_mp4)
+                
+                res = subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
+                if res.returncode == 0 and os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 1024 * 1024:
+                    merged_count += 1
+                    try: os.remove(v_path)
+                    except: pass
+                    try: os.remove(a_path)
+                    except: pass
+                    if os.path.exists(thumb_jpg):
+                        try: os.remove(thumb_jpg)
+                        except: pass
+
+            # 2. Second pass: remove any leftover loose fragments (.jpg, .webp, .webm, .part) for completed mp4s
+            all_files = os.listdir(download_dir)
+            mp4_titles = {
+                f[:-4]: os.path.getsize(os.path.join(download_dir, f))
+                for f in all_files
+                if f.endswith('.mp4') and not re.search(r'\.f\d+\.mp4$', f)
+            }
+            for f in all_files:
+                for title, size in mp4_titles.items():
+                    if size > 1024 * 1024 and f.startswith(title) and f != f"{title}.mp4":
+                        if re.search(r'\.f\d+\.(webm|mp4)$', f) or f.endswith(('.jpg', '.webp', '.webm', '.part', '.ytdl')):
+                            try:
+                                os.remove(os.path.join(download_dir, f))
+                            except:
+                                pass
+            return merged_count
+        except Exception:
+            return merged_count
+
     def monitor_executor(self):
         if self.executor:
             self.executor.shutdown(wait=True)
         if self.is_downloading:
+            merged = self.auto_merge_and_cleanup(self.dir_var.get())
             self.root.after(0, self.reset_ui)
             if self.var_notify.get():
-                self.root.after(0, lambda: ToastNotification(self.root, "Queue Complete", "All downloads have finished processing!"))
+                msg = "All downloads have finished processing!"
+                if merged > 0:
+                    msg += f"\nAuto-merged {merged} videos."
+                self.root.after(0, lambda m=msg: ToastNotification(self.root, "Queue Complete", m))
             self.is_downloading = False
 
     def save_history(self, url, status):
@@ -846,6 +1000,38 @@ class DownloaderApp:
         self._add_to_queue_internal(url, "", "")
         self.tabview.set("General")
 
+    def get_current_config(self):
+        return {
+            "browser": self.browser_var.get(),
+            "quality": self.quality_var.get(),
+            "org": self.folder_org_var.get(),
+            "tmpl": self.tmpl_var.get(),
+            "dir": self.dir_var.get(),
+            "cookie": self.cookie_var.get(),
+            "rate": self.rate_var.get(),
+            "audio": self.audio_var.get(),
+            "force_mp4": self.var_force_mp4.get(),
+            "proxy": self.proxy_var.get(),
+            "normalize": self.var_normalize.get(),
+            "subs": self.var_subs.get(),
+            "meta": self.var_meta.get(),
+            "sponsor": self.var_sponsor.get(),
+            "pl_start": self.pl_start_entry.get(),
+            "pl_end": self.pl_end_entry.get(),
+            "notify": self.var_notify.get(),
+            "members_only": self.var_members_only.get()
+        }
+
+    def get_config_sync(self):
+        config = []
+        event = threading.Event()
+        def fetch():
+            config.append(self.get_current_config())
+            event.set()
+        self.root.after(0, fetch)
+        event.wait()
+        return config[0]
+
     def download_worker(self, item):
         if not self.is_downloading:
             return
@@ -853,37 +1039,52 @@ class DownloaderApp:
         item.status = "Downloading"
         self.root.after(0, lambda: item.set_status("Initializing...", "yellow"))
         
-        browser = self.browser_var.get()
-        quality = self.quality_var.get()
-        org = self.folder_org_var.get()
+        config = self.get_config_sync()
         
-        tmpl = self.tmpl_var.get()
+        browser = config["browser"]
+        quality = config["quality"]
+        org = config["org"]
+        
+        tmpl = config["tmpl"]
         if not tmpl.strip():
             tmpl = "%(title)s.%(ext)s"
             
         if org == "By Channel Name":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(uploader)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(uploader)s', tmpl)
         elif org == "By Playlist":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(playlist)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(playlist)s', tmpl)
         elif org == "By Channel & Playlist":
-            out_tmpl = os.path.join(self.dir_var.get(), '%(uploader)s', '%(playlist)s', tmpl)
+            out_tmpl = os.path.join(config["dir"], '%(uploader)s', '%(playlist)s', tmpl)
         else:
-            out_tmpl = os.path.join(self.dir_var.get(), tmpl)
+            out_tmpl = os.path.join(config["dir"], tmpl)
         
         cmd = ['yt-dlp', '--newline']
+        cmd.extend(['--download-archive', ARCHIVE_FILE])
+        cmd.extend(['--sleep-requests', '1.5', '--sleep-interval', '3', '--max-sleep-interval', '6'])
         
         if browser == "custom":
-            cmd.extend(['--cookies', self.cookie_var.get()])
+            working_cookie = os.path.join(DOCS_DIR, 'working_cookies.txt')
+            try:
+                if os.path.exists(config["cookie"]):
+                    shutil.copyfile(config["cookie"], working_cookie)
+                    cmd.extend(['--cookies', working_cookie])
+                else:
+                    cmd.extend(['--cookies', config["cookie"]])
+            except:
+                cmd.extend(['--cookies', config["cookie"]])
         elif browser != "none":
             cmd.extend(['--cookies-from-browser', browser])
             
         cmd.extend(['--extractor-args', 'youtube:player_client=mweb,web,tv', '--js-runtimes', 'node'])
         
-        rate = self.rate_var.get().strip()
+        rate = config["rate"].strip()
         if rate:
             cmd.extend(['--limit-rate', rate])
         
-        force_mp4 = self.var_force_mp4.get()
+        if config.get("members_only"):
+            cmd.extend(['--match-filters', "availability == subscriber_only"])
+        
+        force_mp4 = config["force_mp4"]
         if quality == "1080p":
             cmd.extend(['-f', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'])
         elif quality == "720p":
@@ -891,38 +1092,39 @@ class DownloaderApp:
         elif quality == "480p":
             cmd.extend(['-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]/best'])
         elif quality == "Audio Only":
-            cmd.extend(['-f', 'bestaudio/best', '--extract-audio', '--audio-format', self.audio_var.get().lower()])
+            cmd.extend(['-f', 'bestaudio/best', '--extract-audio', '--audio-format', config["audio"].lower()])
         else:
             cmd.extend(['-f', 'bestvideo+bestaudio/best'])
             
         if force_mp4 and quality != "Audio Only":
-            cmd.extend(['--recode-video', 'mp4'])
+            cmd.extend(['--merge-output-format', 'mp4', '--remux-video', 'mp4'])
         elif quality != "Audio Only":
-            cmd.extend(['--merge-output-format', 'mkv'])
+            cmd.extend(['--merge-output-format', 'mkv', '--remux-video', 'mkv'])
             
-        if self.proxy_var.get().strip():
-            cmd.extend(['--proxy', self.proxy_var.get().strip()])
+        if config["proxy"].strip():
+            cmd.extend(['--proxy', config["proxy"].strip()])
             
-        if self.var_normalize.get():
-            cmd.extend(['--postprocessor-args', 'ffmpeg:-af loudnorm=I=-16:TP=-1.5:LRA=11'])
+        if config["normalize"]:
+            cmd.extend(['--postprocessor-args', 'Merger:-c:v copy -c:a aac -b:a 192k -af loudnorm=I=-16:TP=-1.5:LRA=11'])
             
-        if self.var_subs.get():
+        if config["subs"]:
             cmd.extend(['--write-subs', '--write-auto-subs', '--embed-subs', '--sub-langs', 'en.*,all'])
-        if self.var_meta.get():
-            cmd.extend(['--write-thumbnail', '--write-description', '--embed-thumbnail', '--embed-metadata'])
-        if self.var_sponsor.get():
+        if config["meta"]:
+            cmd.extend(['--embed-thumbnail', '--embed-metadata', '--convert-thumbnails', 'jpg'])
+        if config["sponsor"]:
             cmd.extend(['--sponsorblock-remove', 'all'])
             
-        if self.pl_start_entry.get().strip().isdigit():
-            cmd.extend(['--playlist-start', self.pl_start_entry.get().strip()])
-        if self.pl_end_entry.get().strip().isdigit():
-            cmd.extend(['--playlist-end', self.pl_end_entry.get().strip()])
+        if config["pl_start"].strip().isdigit():
+            cmd.extend(['--playlist-start', config["pl_start"].strip()])
+        if config["pl_end"].strip().isdigit():
+            cmd.extend(['--playlist-end', config["pl_end"].strip()])
             
         if item.start_time or item.end_time:
             st = item.start_time or "00:00"
             et = item.end_time or "inf"
             cmd.extend(['--download-sections', f"*{st}-{et}"])
             
+        cmd.extend(['--skip-playlist-after-errors', '3'])
         cmd.extend(['-o', out_tmpl, item.url])
 
         max_retries = 3
@@ -940,7 +1142,8 @@ class DownloaderApp:
                     text=True, encoding='utf-8', errors='replace', creationflags=0x08000000
                 )
                 
-                progress_regex = re.compile(r'\[download\]\s+([\d\.]+)%\s+of\s+.*?at\s+([^\s]+)\s+ETA\s+([\d:]+)')
+                progress_regex = re.compile(r'\[download\]\s+([\d\.]+)%\s+of\s+.*?at\s+([^\s]+)\s+ETA\s+([^\s]+)')
+                auth_error_detected = False
                 
                 for line in item.process.stdout:
                     line = line.strip()
@@ -954,6 +1157,32 @@ class DownloaderApp:
                             self.root.after(0, item.update_progress, percent, speed, eta)
                         except ValueError:
                             pass
+                    elif "Join this channel" in line or "cookies are no longer valid" in line:
+                        auth_error_detected = True
+                        self.root.after(0, lambda: item.set_status("Error: Expired/Invalid cookies! Membership required.", "red"))
+                    elif "Destination:" in line:
+                        auth_error_detected = False
+                        m_dest = re.search(r'Destination:\s+(.+)', line)
+                        if m_dest:
+                            fname = os.path.basename(m_dest.group(1))
+                            self.root.after(0, lambda f=fname: item.set_status(f"Downloading: {f[:40]}...", "lightgreen"))
+                    elif "ERROR:" in line:
+                        if "Sign in to confirm" in line:
+                            auth_error_detected = True
+                            self.root.after(0, lambda: item.set_status("Error: YouTube bot check / cookies needed", "red"))
+                        else:
+                            self.root.after(0, lambda l=line: item.set_status(f"Error: {l[:45]}", "red"))
+                    elif "Downloading item" in line:
+                        m_item = re.search(r'Downloading item\s+(\d+\s+of\s+\d+)', line)
+                        txt = f"Processing video {m_item.group(1)}..." if m_item else "Processing next video..."
+                        if not auth_error_detected:
+                            self.root.after(0, lambda t=txt: item.set_status(t, "cyan"))
+                    elif "has already been recorded in the archive" in line or "has already been downloaded" in line:
+                        self.root.after(0, lambda: item.set_status("Already downloaded (skipping)...", "cyan"))
+                    elif "does not pass filter" in line or "skipping" in line:
+                        self.root.after(0, lambda: item.set_status("Skipping non-member video...", "yellow"))
+                    elif "Permission denied" in line or "Could not copy Chrome cookie" in line:
+                        self.root.after(0, lambda: item.set_status("Cookies locked! Close browser.", "red"))
                     elif "[pot:wpc]" in line:
                         self.root.after(0, lambda: item.set_status("Bypassing Bot Protection...", "yellow"))
                     elif "[jsc:node]" in line:
@@ -964,13 +1193,20 @@ class DownloaderApp:
                         self.root.after(0, lambda: item.set_status("Removing Sponsor Segments...", "magenta"))
                     elif "[VideoConvertor]" in line:
                         self.root.after(0, lambda: item.set_status("Re-encoding to MP4...", "orange"))
+                    elif "Downloading webpage" in line:
+                        if not auth_error_detected:
+                            self.root.after(0, lambda: item.set_status("Fetching video info...", "yellow"))
                     
                 item.process.wait()
+                
+                # Automatically merge and clean up any loose video/audio fragments
+                self.auto_merge_and_cleanup(config["dir"])
                 
                 if not self.is_downloading:
                     return
                     
-                if item.process.returncode == 0:
+                has_fragments = any(re.search(r'\.f\d+\.mp4$', f) for f in os.listdir(config["dir"])) if os.path.exists(config["dir"]) else False
+                if item.process.returncode == 0 or not has_fragments:
                     item.status = "Success"
                     self.root.after(0, lambda: item.set_status("Completed!", "lightgreen"))
                     self.save_history(item.url, "Success")
