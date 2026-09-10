@@ -30,7 +30,9 @@ def load_settings():
         "mode": "Dark",
         "download_dir": default_dir,
         "browser": "custom",
-        "cookie_file": default_cookie
+        "cookie_file": default_cookie,
+        "embed_chapters": True,
+        "preserve_mtime": True
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -84,7 +86,7 @@ class ToastNotification:
 
 
 class QueueItem:
-    def __init__(self, url, start_time, end_time, frame, remove_callback):
+    def __init__(self, url, start_time, end_time, frame, remove_callback, app=None):
         self.url = url
         self.start_time = start_time
         self.end_time = end_time
@@ -92,6 +94,11 @@ class QueueItem:
         self.status = "Pending"
         self.process = None
         self.remove_callback = remove_callback
+        self.app = app
+        self.current_percent = 0.0
+        self.current_speed = ""
+        self.current_eta = ""
+        self.title = ""
         
         self.lbl_url = ctk.CTkLabel(self.frame, text=url, font=ctk.CTkFont(weight="bold"), anchor="w")
         self.lbl_url.pack(fill=tk.X, padx=5, pady=(5,0))
@@ -118,13 +125,22 @@ class QueueItem:
                 pass
         self.frame.destroy()
         self.remove_callback(self)
+        if self.app:
+            self.app.update_master_progress()
 
     def update_progress(self, percent, speed, eta):
+        self.current_percent = percent
+        self.current_speed = speed
+        self.current_eta = eta
         self.progress.set(percent)
         self.lbl_status.configure(text=f"Downloading... {percent*100:.1f}% | {speed} | ETA: {eta}", text_color="cyan")
+        if self.app:
+            self.app.update_master_progress()
 
     def set_status(self, text, color="white"):
         self.lbl_status.configure(text=text, text_color=color)
+        if self.app:
+            self.app.update_master_progress()
 
 
 class DownloaderApp:
@@ -168,6 +184,8 @@ class DownloaderApp:
         ctk.CTkLabel(dir_bar, text="📁 Save Folder:", font=ctk.CTkFont(weight="bold", size=13)).pack(side=tk.LEFT, padx=(0, 10))
         self.dir_entry_top = ctk.CTkEntry(dir_bar, textvariable=self.dir_var, height=36, font=ctk.CTkFont(size=12))
         self.dir_entry_top.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.lbl_disk_free = ctk.CTkLabel(dir_bar, text="", font=ctk.CTkFont(size=12, weight="bold"))
+        self.lbl_disk_free.pack(side=tk.LEFT, padx=(0, 10))
         ctk.CTkButton(dir_bar, text="Browse Folder", width=110, height=36, font=ctk.CTkFont(weight="bold"), command=self.browse_dir).pack(side=tk.RIGHT)
 
         # --- Top Section: URL & Queue ---
@@ -189,6 +207,25 @@ class DownloaderApp:
         queue_action_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
         ctk.CTkButton(queue_action_frame, text="Import Queue (.txt)", width=120, command=self.import_queue).pack(side=tk.LEFT, padx=(0, 10))
         ctk.CTkButton(queue_action_frame, text="Export Queue (.txt)", width=120, command=self.export_queue).pack(side=tk.LEFT)
+        
+        self.queue_filter_var = ctk.StringVar()
+        self.queue_filter_var.trace("w", lambda *args: self.filter_queue_items())
+        ctk.CTkEntry(queue_action_frame, textvariable=self.queue_filter_var, placeholder_text="🔍 Filter Queue...", width=180).pack(side=tk.RIGHT)
+
+        # --- Master Queue Progress Banner ---
+        master_banner = ctk.CTkFrame(self.main_container, fg_color=("gray85", "gray20"), corner_radius=8)
+        master_banner.pack(fill=tk.X, padx=20, pady=(4, 6))
+        
+        banner_top = ctk.CTkFrame(master_banner, fg_color="transparent")
+        banner_top.pack(fill=tk.X, padx=10, pady=(5, 2))
+        self.lbl_master_title = ctk.CTkLabel(banner_top, text="Queue Progress: 0 / 0 Completed (0%)", font=ctk.CTkFont(weight="bold", size=13))
+        self.lbl_master_title.pack(side=tk.LEFT)
+        self.lbl_master_stats = ctk.CTkLabel(banner_top, text="Idle", font=ctk.CTkFont(size=12), text_color="cyan")
+        self.lbl_master_stats.pack(side=tk.RIGHT)
+        
+        self.master_progress = ctk.CTkProgressBar(master_banner, height=10)
+        self.master_progress.set(0)
+        self.master_progress.pack(fill=tk.X, padx=10, pady=(0, 6))
 
         # --- Queue List ---
         self.queue_frame = ctk.CTkScrollableFrame(self.main_container, height=180, corner_radius=10)
@@ -239,6 +276,8 @@ class DownloaderApp:
 
         self.btn_clean = ctk.CTkButton(action_frame, text="🧹 Merge & Clean Leftovers", font=ctk.CTkFont(size=15, weight="bold"), height=50, fg_color="#1E88E5", hover_color="#1565C0", command=self.manual_merge_clean)
         self.btn_clean.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+        self.update_disk_free_display()
 
     # --- System Tray ---
     def hide_window(self):
@@ -350,6 +389,31 @@ class DownloaderApp:
         self.cookie_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         ctk.CTkButton(cookie_frame, text="Browse", width=80, command=self.browse_cookie).pack(side=tk.RIGHT)
 
+        # Authentication Verification Tool
+        test_card = ctk.CTkFrame(tab, corner_radius=10)
+        test_card.pack(fill=tk.X, padx=10, pady=(15, 5))
+        
+        test_inner = ctk.CTkFrame(test_card, fg_color="transparent")
+        test_inner.pack(fill=tk.X, padx=15, pady=12)
+        
+        self.btn_test_auth = ctk.CTkButton(
+            test_inner, text="⚡ Verify Authentication", font=ctk.CTkFont(weight="bold", size=13),
+            height=38, width=180, fg_color="#0288D1", hover_color="#0277BD", command=self.test_authentication
+        )
+        self.btn_test_auth.pack(side=tk.LEFT, padx=(0, 15))
+        
+        self.lbl_auth_status = ctk.CTkLabel(
+            test_inner, text="Click to verify whether YouTube accepts your current cookie settings.",
+            text_color="gray", font=ctk.CTkFont(size=12), anchor="w"
+        )
+        self.lbl_auth_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tip_lbl = ctk.CTkLabel(
+            tab, text="💡 Tip: If using Chrome/Edge/Brave directly, make sure the browser is fully closed before testing or downloading so its cookie database isn't locked.",
+            text_color="gray", font=ctk.CTkFont(size=11), wraplength=900, justify="left"
+        )
+        tip_lbl.pack(anchor="w", padx=15, pady=(5, 5))
+
     def setup_extras_tab(self, tab):
         tab.grid_columnconfigure((0, 1), weight=1)
         self.var_subs = ctk.BooleanVar(value=False)
@@ -405,9 +469,22 @@ class DownloaderApp:
         ctk.CTkSwitch(f7, text="Members-Only Filter", variable=self.var_members_only).pack(anchor="w")
         ctk.CTkLabel(f7, text="If you paste a channel URL, it will skip public videos.", text_color="gray", font=ctk.CTkFont(size=11), wraplength=400, justify="left").pack(anchor="w", padx=45)
         
+        # Row 4: Archival Polish
+        self.var_chapters = ctk.BooleanVar(value=current_settings.get("embed_chapters", True))
+        f8 = ctk.CTkFrame(tab, fg_color="transparent")
+        f8.grid(row=4, column=0, padx=20, pady=10, sticky="w")
+        ctk.CTkSwitch(f8, text="Embed Video Chapters", variable=self.var_chapters, command=self._save_archival_settings).pack(anchor="w")
+        ctk.CTkLabel(f8, text="Embeds chapter markers directly into video files.", text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=45)
+
+        self.var_mtime = ctk.BooleanVar(value=current_settings.get("preserve_mtime", True))
+        f9 = ctk.CTkFrame(tab, fg_color="transparent")
+        f9.grid(row=4, column=1, padx=20, pady=10, sticky="w")
+        ctk.CTkSwitch(f9, text="Preserve Upload Date", variable=self.var_mtime, command=self._save_archival_settings).pack(anchor="w")
+        ctk.CTkLabel(f9, text="Matches file modified date to YouTube video upload date.", text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=45)
+
         # Playlist controls
         pl_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        pl_frame.grid(row=4, column=0, columnspan=2, sticky="w", padx=20, pady=10)
+        pl_frame.grid(row=5, column=0, columnspan=2, sticky="w", padx=20, pady=10)
         ctk.CTkLabel(pl_frame, text="Playlist Start:", font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT)
         self.pl_start_entry = ctk.CTkEntry(pl_frame, placeholder_text="1", width=60)
         self.pl_start_entry.pack(side=tk.LEFT, padx=10)
@@ -418,9 +495,14 @@ class DownloaderApp:
 
         # Update yt-dlp
         update_frame = ctk.CTkFrame(tab, fg_color="transparent")
-        update_frame.grid(row=5, column=0, columnspan=2, sticky="w", padx=20, pady=10)
+        update_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=20, pady=10)
         ctk.CTkButton(update_frame, text="Update yt-dlp", command=self.update_ytdlp).pack(side=tk.LEFT)
         ctk.CTkLabel(update_frame, text="Click occasionally to ensure YouTube hasn't blocked downloads.", text_color="gray", font=ctk.CTkFont(size=11)).pack(side=tk.LEFT, padx=10)
+
+    def _save_archival_settings(self):
+        current_settings["embed_chapters"] = self.var_chapters.get()
+        current_settings["preserve_mtime"] = self.var_mtime.get()
+        save_settings(current_settings)
 
     def setup_network_tab(self, tab):
         ctk.CTkLabel(tab, text="Proxy Server (VPN Bypass):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 5))
@@ -529,6 +611,21 @@ class DownloaderApp:
             self.dir_var.set(d)
             current_settings["download_dir"] = d
             save_settings(current_settings)
+            self.update_disk_free_display()
+
+    def update_disk_free_display(self):
+        d = self.dir_var.get()
+        try:
+            if os.path.exists(d):
+                usage = shutil.disk_usage(d)
+                free_gb = usage.free / (1024**3)
+                drive_letter = os.path.splitdrive(os.path.abspath(d))[0]
+                color = "#4CAF50" if free_gb > 10 else ("#FF9800" if free_gb > 3 else "#F44336")
+                self.lbl_disk_free.configure(text=f"💾 {drive_letter} {free_gb:.1f} GB Free", text_color=color)
+            else:
+                self.lbl_disk_free.configure(text="💾 Folder missing", text_color="#F44336")
+        except:
+            self.lbl_disk_free.configure(text="", text_color="gray")
 
     def browse_cookie(self):
         f = filedialog.askopenfilename(title="Select cookies.txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
@@ -541,6 +638,101 @@ class DownloaderApp:
             current_settings["cookie_file"] = f
             current_settings["browser"] = "custom"
             save_settings(current_settings)
+
+    def test_authentication(self):
+        self.btn_test_auth.configure(state="disabled", text="⏳ Probing...")
+        self.lbl_auth_status.configure(text="Testing authentication against YouTube...", text_color="#0288D1")
+        threading.Thread(target=self._run_auth_test, daemon=True).start()
+
+    def _run_auth_test(self):
+        config = self.get_config_sync()
+        browser = config["browser"]
+        cookie = config["cookie"]
+        cmd = ['yt-dlp', '--dump-json', '--playlist-items', '1', '--no-download', '--newline']
+        
+        if browser == "custom":
+            if not os.path.exists(cookie):
+                self.root.after(0, lambda: self.lbl_auth_status.configure(text="❌ Error: cookies.txt file not found at specified path!", text_color="#F44336"))
+                self.root.after(0, lambda: self.btn_test_auth.configure(state="normal", text="⚡ Verify Authentication"))
+                return
+            cmd.extend(['--cookies', cookie])
+        elif browser != "none":
+            cmd.extend(['--cookies-from-browser', browser])
+        else:
+            self.root.after(0, lambda: self.lbl_auth_status.configure(text="⚠️ Login method is 'None'. Members-only videos require cookies.", text_color="#FF9800"))
+            self.root.after(0, lambda: self.btn_test_auth.configure(state="normal", text="⚡ Verify Authentication"))
+            return
+
+        cmd.extend(['--extractor-args', 'youtube:player_client=mweb,web,tv', '--js-runtimes', 'node'])
+        cmd.append("https://www.youtube.com/feed/subscriptions")
+        
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, errors='replace', creationflags=0x08000000)
+            out = proc.stdout + proc.stderr
+            if proc.returncode == 0 and len(proc.stdout.strip()) > 0:
+                msg = "✅ Active & Verified! Connected to YouTube as an authenticated user."
+                color = "#4CAF50"
+            elif "Join this channel" in out or "Sign in to confirm" in out or "cookies are no longer valid" in out:
+                msg = "❌ Expired / Invalid! YouTube rejected session. Please refresh your cookies."
+                color = "#F44336"
+            elif "Could not copy Chrome cookie" in out or "Permission denied" in out:
+                msg = "⚠️ Browser cookie database is locked! Please close your browser and try again."
+                color = "#FF9800"
+            elif proc.returncode == 0:
+                msg = "✅ Connection established. Cookies accepted without errors."
+                color = "#4CAF50"
+            else:
+                first_err = [line for line in out.splitlines() if "ERROR:" in line]
+                err_txt = first_err[0] if first_err else out[-100:]
+                msg = f"⚠️ Probe result: {err_txt[:75]}"
+                color = "#FF9800"
+        except Exception as e:
+            msg = f"❌ Test error: {str(e)}"
+            color = "#F44336"
+
+        self.root.after(0, lambda: self.lbl_auth_status.configure(text=msg, text_color=color))
+        self.root.after(0, lambda: self.btn_test_auth.configure(state="normal", text="⚡ Verify Authentication"))
+
+    def filter_queue_items(self):
+        q = self.queue_filter_var.get().strip().lower()
+        for item in self.queue_items:
+            matches = not q or q in item.url.lower() or q in item.title.lower() or q in item.status.lower()
+            if matches:
+                item.frame.pack(fill=tk.X, pady=5)
+            else:
+                item.frame.pack_forget()
+
+    def update_master_progress(self):
+        total = len(self.queue_items)
+        if total == 0:
+            self.master_progress.set(0)
+            self.lbl_master_title.configure(text="Queue Progress: 0 / 0 Completed (0%)")
+            self.lbl_master_stats.configure(text="Idle")
+            return
+            
+        completed = sum(1 for i in self.queue_items if i.status == "Success")
+        failed = sum(1 for i in self.queue_items if i.status in ["Failed", "Error"])
+        downloading = [i for i in self.queue_items if i.status == "Downloading"]
+        
+        in_prog_sum = sum(i.current_percent for i in downloading)
+        fraction = (completed + in_prog_sum) / total
+        fraction = max(0.0, min(1.0, fraction))
+        self.master_progress.set(fraction)
+        
+        pct_str = f"{fraction * 100:.1f}%"
+        status_txt = f"Queue Progress: {completed} / {total} Done ({pct_str})"
+        if failed > 0:
+            status_txt += f" • {failed} Failed"
+        self.lbl_master_title.configure(text=status_txt)
+        
+        active_speeds = [i.current_speed for i in downloading if i.current_speed]
+        active_etas = [i.current_eta for i in downloading if i.current_eta]
+        if active_speeds:
+            self.lbl_master_stats.configure(text=f"Speed: {active_speeds[0]} | ETA: {active_etas[0] if active_etas else '--'}")
+        elif completed == total and total > 0:
+            self.lbl_master_stats.configure(text="All Completed!")
+        else:
+            self.lbl_master_stats.configure(text="Active" if self.is_downloading else "Idle")
 
     def add_to_queue(self):
         url = self.url_entry.get().strip()
@@ -563,18 +755,21 @@ class DownloaderApp:
     def _add_to_queue_internal(self, url, start, end):
         f = ctk.CTkFrame(self.queue_frame)
         f.pack(fill=tk.X, pady=5)
-        item = QueueItem(url, start, end, f, self.remove_from_queue)
+        item = QueueItem(url, start, end, f, self.remove_from_queue, app=self)
         self.queue_items.append(item)
+        self.update_master_progress()
         
     def remove_from_queue(self, item):
         if item in self.queue_items:
             self.queue_items.remove(item)
+        self.update_master_progress()
 
     def clear_completed(self):
         to_remove = [item for item in self.queue_items if item.status in ["Success", "Failed", "Canceled"]]
         for item in to_remove:
             item.frame.destroy()
             self.queue_items.remove(item)
+        self.update_master_progress()
 
     # --- Monitor Logic ---
     def add_monitor_url(self):
@@ -717,11 +912,21 @@ class DownloaderApp:
         elif quality != "Audio Only":
             cmd.extend(['--merge-output-format', 'mkv', '--remux-video', 'mkv'])
             
-        if config["meta"]:
+        if config.get("meta"):
             cmd.extend(['--embed-thumbnail', '--embed-metadata', '--convert-thumbnails', 'jpg'])
+        if config.get("chapters", True):
+            cmd.append('--embed-chapters')
+        if config.get("mtime", True):
+            cmd.append('--mtime')
             
         cmd.extend(['-o', out_tmpl, url])
-        try: subprocess.run(cmd, creationflags=0x08000000, capture_output=True)
+        try:
+            res = subprocess.run(cmd, creationflags=0x08000000, capture_output=True, text=True, errors='replace')
+            merged = self.auto_merge_and_cleanup(config["dir"])
+            downloaded_new = ("[download] Destination:" in res.stdout or "[download] 100%" in res.stdout) and "has already been recorded" not in res.stdout
+            if downloaded_new or merged > 0:
+                if self.var_notify.get():
+                    self.root.after(0, lambda: ToastNotification(self.root, "Auto-Monitor: New Video!", f"Downloaded and archived new video from:\n{url}"))
         except: pass
 
     # --- Core Downloading ---
@@ -819,6 +1024,25 @@ class DownloaderApp:
         if not pending:
             messagebox.showinfo("Queue", "No pending downloads in the queue.")
             return
+
+        # Pre-flight Disk Space Check
+        download_dir = self.dir_var.get()
+        try:
+            if not os.path.exists(download_dir):
+                os.makedirs(download_dir, exist_ok=True)
+            self.update_disk_free_display()
+            free_gb = shutil.disk_usage(download_dir).free / (1024**3)
+            if free_gb < 2.0:
+                proceed = messagebox.askyesno(
+                    "Low Disk Space Warning",
+                    f"The selected drive only has {free_gb:.2f} GB of free space left!\n\n"
+                    f"Downloading multiple high-quality videos may fill the drive and cause errors.\n\n"
+                    f"Do you want to continue anyway?"
+                )
+                if not proceed:
+                    return
+        except Exception:
+            pass
             
         if self.var_schedule.get():
             time_str = self.schedule_entry.get().strip()
@@ -902,23 +1126,46 @@ class DownloaderApp:
                         except: pass
                     continue
                 
+                try:
+                    orig_mtime = os.path.getmtime(v_path)
+                except:
+                    orig_mtime = None
+
                 cmd = ['ffmpeg', '-y', '-i', v_path, '-i', a_path]
                 if os.path.exists(thumb_jpg):
                     cmd.extend(['-i', thumb_jpg, '-map', '0:v', '-map', '1:a', '-map', '2', '-c', 'copy', '-disposition:v:1', 'attached_pic'])
                 else:
                     cmd.extend(['-map', '0:v', '-map', '1:a', '-c', 'copy'])
+                cmd.extend(['-map_metadata', '0'])
                 cmd.append(out_mp4)
                 
                 res = subprocess.run(cmd, capture_output=True, creationflags=0x08000000)
                 if res.returncode == 0 and os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 1024 * 1024:
-                    merged_count += 1
-                    try: os.remove(v_path)
-                    except: pass
-                    try: os.remove(a_path)
-                    except: pass
-                    if os.path.exists(thumb_jpg):
-                        try: os.remove(thumb_jpg)
+                    # Integrity Verification via ffprobe
+                    is_valid = True
+                    try:
+                        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', out_mp4]
+                        probe_res = subprocess.run(probe_cmd, capture_output=True, text=True, creationflags=0x08000000)
+                        dur = float(probe_res.stdout.strip())
+                        if dur <= 0:
+                            is_valid = False
+                    except:
+                        is_valid = True
+
+                    if is_valid:
+                        merged_count += 1
+                        if orig_mtime:
+                            try:
+                                os.utime(out_mp4, (orig_mtime, orig_mtime))
+                            except:
+                                pass
+                        try: os.remove(v_path)
                         except: pass
+                        try: os.remove(a_path)
+                        except: pass
+                        if os.path.exists(thumb_jpg):
+                            try: os.remove(thumb_jpg)
+                            except: pass
 
             # 2. Second pass: remove any leftover loose fragments (.jpg, .webp, .webm, .part) for completed mp4s
             all_files = os.listdir(download_dir)
@@ -935,8 +1182,10 @@ class DownloaderApp:
                                 os.remove(os.path.join(download_dir, f))
                             except:
                                 pass
+            self.root.after(0, self.update_disk_free_display)
             return merged_count
         except Exception:
+            self.root.after(0, self.update_disk_free_display)
             return merged_count
 
     def monitor_executor(self):
@@ -1019,7 +1268,9 @@ class DownloaderApp:
             "pl_start": self.pl_start_entry.get(),
             "pl_end": self.pl_end_entry.get(),
             "notify": self.var_notify.get(),
-            "members_only": self.var_members_only.get()
+            "members_only": self.var_members_only.get(),
+            "chapters": self.var_chapters.get(),
+            "mtime": self.var_mtime.get()
         }
 
     def get_config_sync(self):
@@ -1111,6 +1362,10 @@ class DownloaderApp:
             cmd.extend(['--write-subs', '--write-auto-subs', '--embed-subs', '--sub-langs', 'en.*,all'])
         if config["meta"]:
             cmd.extend(['--embed-thumbnail', '--embed-metadata', '--convert-thumbnails', 'jpg'])
+        if config.get("chapters", True):
+            cmd.append('--embed-chapters')
+        if config.get("mtime", True):
+            cmd.append('--mtime')
         if config["sponsor"]:
             cmd.extend(['--sponsorblock-remove', 'all'])
             
